@@ -1,31 +1,77 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 BLANK = 'B'
+ANCHO_BITS = 8
 
-# Se lee el patron/coeficiente de multiplicacion desde index.txt
-# Ejemplo contenido index.txt: 00000010#
-with open("index.txt", "r") as f:
-    contenido = f.read().strip()
-    PATTERNS = [p for p in contenido.split("#") if p]
+# Dos señales de entrada: x(t) y cos(t), muestra a muestra, mismo N.
+with open("entrada_x.txt", "r") as f:
+    contenido_x = f.read().strip()
+    ENTRADA_X = [p for p in contenido_x.split("#") if p]
+
+with open("entrada_cos.txt", "r") as f:
+    contenido_cos = f.read().strip()
+    ENTRADA_COS = [p for p in contenido_cos.split("#") if p]
+
+
+# ---------- Aritmetica en complemento a 2 (Python-side, table-build time) ----------
+def bits_a_entero(bits: str) -> int:
+    valor = int(bits, 2)
+    if bits[0] == '1':
+        valor -= (1 << len(bits))
+    return valor
+
+
+def entero_a_bits(valor: int, ancho: int = ANCHO_BITS) -> str:
+    return format(valor & ((1 << ancho) - 1), '0{}b'.format(ancho))
+
+
+def multiplicar_par(a_bits: str, b_bits: str) -> str:
+    """a*b en complemento a 2, truncado a ANCHO_BITS (overflow = wrap,
+    comportamiento estandar de aritmetica de ancho fijo)."""
+    producto = bits_a_entero(a_bits) * bits_a_entero(b_bits)
+    return entero_a_bits(producto)
+
+
+def construir_productos(entrada_x: List[str], entrada_cos: List[str]) -> List[str]:
+    if len(entrada_x) != len(entrada_cos):
+        raise ValueError(
+            f"Las dos señales deben tener el mismo numero de muestras "
+            f"(x(t): {len(entrada_x)}, cos(t): {len(entrada_cos)})"
+        )
+    return [multiplicar_par(a, b) for a, b in zip(entrada_x, entrada_cos)]
+
+
+PRODUCTOS = construir_productos(ENTRADA_X, ENTRADA_COS)
 
 
 class TMMultiplicador:
+    """
+    Multiplica x(t) por cos(t), muestra a muestra. Estructura identica a
+    TMOscilador/TMFiltro (contador unario + bloques WRITE por tarjeta),
+    generalizada a la lista PRODUCTOS calculada a partir de dos señales
+    de entrada en vez de un solo coeficiente replicado.
+
+    Nota de diseño: el producto de cada par se precalcula en Python al
+    construir la tabla delta (misma convencion que ya usa el oscilador
+    para hornear los bits de cada patron). La TM secuencia la escritura
+    mediante el contador unario; no ejecuta shift-and-add bit a bit en
+    tiempo de ejecucion.
+    """
+
     def __init__(self, N: int):
         if N <= 0:
             raise ValueError("N debe ser un entero positivo")
         self.N = N
-        self.patron = PATTERNS[0]  # Coeficiente/Patron a multiplicar (e.g. 8 bits)
-        self.longitud_patron = len(self.patron)
         self.tape: Dict[int, str] = {}
         self.head: int = 0
-        self.state = ('BUSCAR_TICK', 0)
+        self.state = ('BUSCAR_TICK', self.N - 1)
         self.trace = []
         self.step_count = 0
         self.halted = False
         self._construir_cinta_inicial()
         self._construir_tabla_transiciones()
 
-    # ---------- Primitivas de cinta ----------
+    # ---------- primitivas de cinta (dict) ----------
     def leer(self, pos=None) -> str:
         if pos is None:
             pos = self.head
@@ -43,69 +89,60 @@ class TMMultiplicador:
     def mover_izquierda(self):
         self.head -= 1
 
-    # ---------- Cinta inicial ----------
+    # ---------- cinta inicial ----------
     def _construir_cinta_inicial(self):
-        # 1. Zona contador (N unos)
+        # Zona contador: un tick por muestra a multiplicar
         for i in range(self.N):
             self.tape[i] = '1'
-        self.tape[self.N] = '$'  # Frontera 1
-        
-        # 2. Zona escalar (se escribe el patron a multiplicar)
-        offset = self.N + 1
-        for i, char in enumerate(self.patron):
-            self.tape[offset + i] = char
-        
-        # 3. Frontera 2 (delimita la entrada/patron de la salida)
-        self.tape[offset + self.longitud_patron] = '$'
+        self.tape[self.N] = '$'  # frontera
         self.head = 0
 
-    # ---------- Tabla de transiciones delta ----------
+    # ---------- tabla de transiciones delta ----------
     def _construir_tabla_transiciones(self):
         d: Dict[Tuple, Tuple] = {}
-        L = self.longitud_patron
+        L = self.N
 
-        # --- Escribir bit a bit el patron ---
-        for i in range(L):
-            estado = ('WRITE', 0, i)
-            bit = self.patron[i]
-            siguiente_estado = ('WRITE', 0, i + 1) if i < L - 1 else ('WRITE_HASH', 0)
-            
+        for p in range(L):
+            patron = PRODUCTOS[p]
+            siguiente_p = (p + 1) % L if L > 1 else p
+
+            # --- escribir bit a bit el producto p ---
+            for i in range(ANCHO_BITS):
+                estado = ('WRITE', p, i)
+                bit = patron[i]
+                if i < ANCHO_BITS - 1:
+                    siguiente_estado = ('WRITE', p, i + 1)
+                else:
+                    siguiente_estado = ('WRITE_HASH', p)
+                for simbolo_leido in ('0', '1', '#', '$', 'X', BLANK):
+                    d[(estado, simbolo_leido)] = (siguiente_estado, bit, 'R')
+
+            # --- escribir el separador '#' al final del bloque ---
+            estado_hash = ('WRITE_HASH', p)
             for simbolo_leido in ('0', '1', '#', '$', 'X', BLANK):
-                d[(estado, simbolo_leido)] = (siguiente_estado, bit, 'R')
+                d[(estado_hash, simbolo_leido)] = (('IR_A_CONTADOR', p), '#', 'R')
 
-        # --- Escribir el separador '#' al final de la muestra multiplicada ---
-        estado_hash = ('WRITE_HASH', 0)
-        for simbolo_leido in ('0', '1', '#', '$', 'X', BLANK):
-            d[(estado_hash, simbolo_leido)] = (('IR_A_CONTADOR', 0), '#', 'R')
+            # --- volver a la izquierda cruzando la salida ya escrita ---
+            estado_ir = ('IR_A_CONTADOR', p)
+            for simbolo_leido in ('0', '1', '#', BLANK):
+                d[(estado_ir, simbolo_leido)] = (estado_ir, simbolo_leido, 'L')
+            d[(estado_ir, '$')] = (('BUSCAR_TICK', p), '$', 'L')
 
-        # --- Volver a la izquierda cruzando la salida e ignorando el primer '$' ---
-        estado_ir = ('IR_A_CONTADOR', 0)
-        for simbolo_leido in ('0', '1', '#', BLANK):
-            d[(estado_ir, simbolo_leido)] = (estado_ir, simbolo_leido, 'L')
-        
-        # Al cruzar el '$' de la frontera de salida, pasa a buscar la frontera del contador
-        d[(estado_ir, '$')] = (('BUSCAR_FRONTERA_CONTADOR', 0), '$', 'L')
+            # --- zona contador: consumir un '1' activo ---
+            estado_buscar = ('BUSCAR_TICK', p)
+            d[(estado_buscar, 'X')] = (estado_buscar, 'X', 'L')
+            d[(estado_buscar, '1')] = (('VOLVER_FRONTERA', siguiente_p), 'X', 'R')
+            d[(estado_buscar, BLANK)] = ('q_halt', BLANK, 'N')
 
-        estado_buscar_f1 = ('BUSCAR_FRONTERA_CONTADOR', 0)
-        for simbolo_leido in ('0', '1', 'X'):
-            d[(estado_buscar_f1, simbolo_leido)] = (estado_buscar_f1, simbolo_leido, 'L')
-        d[(estado_buscar_f1, '$')] = (('BUSCAR_TICK', 0), '$', 'L')
-
-        # --- Zona contador: consumir un '1' activo ---
-        estado_buscar = ('BUSCAR_TICK', 0)
-        d[(estado_buscar, 'X')] = (estado_buscar, 'X', 'L')
-        d[(estado_buscar, '1')] = (('VOLVER_FRONTERA', 0), 'X', 'R')
-        d[(estado_buscar, BLANK)] = ('q_halt', BLANK, 'N')
-
-        # --- Volver a la derecha hasta el primer BLANK disponible en la salida ---
-        estado_volver = ('VOLVER_FRONTERA', 0)
-        for simbolo_leido in ('1', 'X', '$', '0', '#'):
-            d[(estado_volver, simbolo_leido)] = (estado_volver, simbolo_leido, 'R')
-        d[(estado_volver, BLANK)] = (('WRITE', 0, 0), BLANK, 'R')
+            # --- volver a la derecha hasta el primer blanco disponible ---
+            estado_volver = ('VOLVER_FRONTERA', p)
+            for simbolo_leido in ('1', 'X', '$', '0', '#'):
+                d[(estado_volver, simbolo_leido)] = (estado_volver, simbolo_leido, 'R')
+            d[(estado_volver, BLANK)] = (('WRITE', p, 0), BLANK, 'R')
 
         self.delta = d
 
-    # ---------- Ejecución paso a paso ----------
+    # ---------- ejecucion paso a paso ----------
     def step(self):
         if self.halted:
             return False
@@ -120,11 +157,11 @@ class TMMultiplicador:
 
         nuevo_estado, simbolo_a_escribir, movimiento = tarjeta
 
-        # Manejo de borde al posicionarse en el BLANK de salida
         if self.state[0] == 'VOLVER_FRONTERA' and simbolo == BLANK:
-            self.escribir(self.head, self.patron[0])
-            self.trace.append((self.step_count, self.state, simbolo, ('WRITE', 0, 1), self.patron[0], 'R'))
-            self.state = ('WRITE', 0, 1)
+            p_actual = self.state[1]
+            self.escribir(self.head, PRODUCTOS[p_actual][0])
+            self.trace.append((self.step_count, self.state, simbolo, ('WRITE', p_actual, 1), PRODUCTOS[p_actual][0], 'R'))
+            self.state = ('WRITE', p_actual, 1)
             self.mover_derecha()
             self.step_count += 1
             return True
@@ -149,13 +186,12 @@ class TMMultiplicador:
         while not self.halted and self.step_count < max_pasos:
             self.step()
         if not self.halted:
-            raise RuntimeError("La maquina no llego a q_halt")
+            raise RuntimeError("La maquina no llego a q_halt (limite de pasos superado)")
         return self.leer_salida()
 
-    # ---------- Leer el resultado de la salida ----------
+    #leer el resultado de la salida 
     def leer_salida(self) -> str:
-        # La salida empieza despues del segundo '$'
-        pos = self.N + 1 + self.longitud_patron + 1
+        pos = self.N + 1
         out = []
         while pos in self.tape:
             out.append(self.tape[pos])
@@ -163,13 +199,20 @@ class TMMultiplicador:
         return ''.join(out)
 
 
-# --------------------------- Prueba ---------------------------
 if __name__ == "__main__":
-    N = 4  # N muestras a multiplicar
+    N = len(ENTRADA_X)
     m = TMMultiplicador(N)
     salida = m.correr()
 
     print(f"N = {N}")
-    print(f"Patrón a multiplicar (desde index.txt): {m.patron}")
+    print(f"x(t):   {ENTRADA_X}")
+    print(f"cos(t): {ENTRADA_COS}")
+    print(f"Productos precalculados: {PRODUCTOS}")
     print(f"Pasos ejecutados: {m.step_count}")
-    print(f"Resultado en la cinta de salida:\n{salida}")
+    print(f"Cinta de salida: {salida}")
+    print()
+    print("Verificacion manual:")
+    for i, r in enumerate(PRODUCTOS):
+        print(f"  muestra {i}: {ENTRADA_X[i]}({bits_a_entero(ENTRADA_X[i])}) * "
+              f"{ENTRADA_COS[i]}({bits_a_entero(ENTRADA_COS[i])}) = "
+              f"{r}({bits_a_entero(r)})")
