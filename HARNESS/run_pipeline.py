@@ -8,10 +8,11 @@ MULT_DIR = BASE_DIR / "MULTIPLICADOR"
 FILTRO_DIR = BASE_DIR / "FILTRO"
 
 
-def correr_script(carpeta: Path, script: str) -> str:
-    #Ejecuta un script de una TM en su propia carpeta y lee su salida.txt
+def correr_script(carpeta: Path, script: str, argumentos=None) -> str:
+    #Ejecuta un script de una TM en su propia carpeta y lee su salida.txt.
+    argumentos = argumentos or []
     resultado = subprocess.run(
-        [sys.executable, script],
+        [sys.executable, script, *argumentos],
         cwd=carpeta,
         capture_output=True,
         text=True,
@@ -41,12 +42,10 @@ def bits_a_entero(bits: str) -> int:
 def run_pipeline(x_muestras):
     N = len(x_muestras)
     if N % 4 != 0:
-        raise ValueError("El oscilador requiere N multiplo de 4")
-    if N % 2 != 0:
-        raise ValueError("El filtro requiere N par")
+        raise ValueError("El oscilador y el filtro requieren N multiplo de 4")
 
     #Etapa 1: generar cos(t) — primera instancia (nodo 1)
-    cos1 = parsear_senal(correr_script(OSC_DIR, "OSCILADORUNO.py"))
+    cos1 = parsear_senal(correr_script(OSC_DIR, "OSCILADORUNO.py", [str(N)]))
 
     #Etapa 2: x(t) * cos(t) — primera multiplicación (nodo 2)
     escribir_senal(MULT_DIR / "entrada_x.txt", x_muestras)
@@ -54,7 +53,7 @@ def run_pipeline(x_muestras):
     mod1 = parsear_senal(correr_script(MULT_DIR, "MULTIPLICADORUNO.py"))
 
     #Etapa 3: generar cos(t) — segunda instancia (nodo 4)
-    cos2 = parsear_senal(correr_script(OSC_DIR, "OSCILADORUNO.py"))
+    cos2 = parsear_senal(correr_script(OSC_DIR, "OSCILADORUNO.py", [str(N)]))
 
     #Etapa 4: x(t)*cos(t) * cos(t) = x(t)*cos^2(t) — segunda multiplicación (nodo 3)
     escribir_senal(MULT_DIR / "entrada_x.txt", mod1)
@@ -76,27 +75,39 @@ def run_pipeline(x_muestras):
 
 
 if __name__ == "__main__":
-    x_ejemplo = ["00000001", "11111111", "11111111", "00000001"]  #x(t) = [1,-1,-1,1]
+    #x(t) con amplitud mayor para que el filtro produzca salidas no triviales con amplitud 1 la división entera trunca a 0 y no demuestra nada)
+    x_ejemplo = [
+        "00000100", "00000100", "00000100", "11111100",  # [4,4,4,-4] -> promedio 3
+        "11111100", "11111100", "11111100", "00000100",  # [-4,-4,-4,4] -> promedio -2
+    ]
 
     resultado = run_pipeline(x_ejemplo)
 
-    print("Pipeline completo (valores decimales) \n")
+    print("=== Pipeline completo (valores decimales) ===\n")
     for etapa, muestras in resultado.items():
         valores = [bits_a_entero(m) for m in muestras]
         print(f"{etapa:20s}: {valores}")
 
-    print("\nVerificación")
+    print("\n=== Verificacion ===")
     x_dec = [bits_a_entero(m) for m in x_ejemplo]
     salida_dec = [bits_a_entero(m) for m in resultado["salida filtrada"]]
 
-    #El filtro promedia pares no solapados: la salida tiene N/2 muestras.
-    #Cada muestra de salida corresponde al promedio de x(t) en ese par de
-    #instantes, escalado por el efecto de cos^2 (promedio ~0.5 en el ciclo).
-    print("El filtro reduce N muestras a N/2 (ventana no solapada).")
-    print(f"x(t) original ({len(x_dec)} muestras): {x_dec}")
-    print(f"Salida filtrada ({len(salida_dec)} muestras): {salida_dec}")
-    print("Compara cada muestra de salida contra el promedio del par de x(t) correspondiente / 2.")
+    #El filtro promedia grupos de 4 (un ciclo completo del oscilador): la
+    #salida tiene N/4 muestras. La referencia correcta es el promedio
+    #elemento-a-elemento de x(t)*cos^2(t) en esa ventana (NO x_promedio/2:
+    #esa aproximación solo es válida si x es constante dentro de la ventana,
+    #y con un oscilador discreto de 4 niveles la mitad de las muestras de
+    #cos^2 son exactamente 0, asi que la variacion de x en esos instantes
+    #queda fuera del promedio).
+    VENTANA = 4
+    mod2_dec = [bits_a_entero(m) for m in resultado["x(t)*cos^2(t)"]]
+    print(f"El filtro reduce N={len(x_dec)} muestras a N/{VENTANA}={len(salida_dec)} (ventana = 1 ciclo del oscilador).")
+    print(f"x(t) original: {x_dec}")
+    print(f"Salida filtrada: {salida_dec}")
+    print("Referencia correcta = promedio (entero, division hacia -inf) de x(t)*cos^2(t) en la ventana:")
     for i, val in enumerate(salida_dec):
-        par = x_dec[2 * i], x_dec[2 * i + 1]
-        promedio_esperado = sum(par) / 2 / 2  #Promedio del par, atenuado por el factor 1/2 de la demodulación
-        print(f"  salida[{i}]={val}   par x(t)={par}   referencia aproximada={promedio_esperado}")
+        grupo_mod2 = mod2_dec[i * VENTANA:(i + 1) * VENTANA]
+        referencia_entera = sum(grupo_mod2) // VENTANA  #Misma aritmetica que usa el filtro
+        print(f"  salida[{i}]={val}   x(t)*cos^2(t) en ventana={grupo_mod2}   "
+              f"suma={sum(grupo_mod2)}   referencia (suma//{VENTANA})={referencia_entera}   "
+              f"COINCIDE={val == referencia_entera}")
