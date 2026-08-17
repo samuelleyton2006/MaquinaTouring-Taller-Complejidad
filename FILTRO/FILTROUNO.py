@@ -10,7 +10,7 @@ with open("index.txt", "r") as f:
     MUESTRAS = [p for p in contenido.split("#") if p]
 
 
-#Aritmetica en complemento a 2 (Python-side, table-build time)
+#Aritmetica en complemento a 2 (Python-side, table-build time) 
 def bits_a_entero(bits: str) -> int:
     valor = int(bits, 2)
     if bits[0] == '1':
@@ -22,20 +22,25 @@ def entero_a_bits(valor: int, ancho: int = ANCHO_BITS) -> str:
     return format(valor & ((1 << ancho) - 1), '0{}b'.format(ancho))
 
 
-def promediar_par(a_bits: str, b_bits: str) -> str:
-    #(a+b) >> 1 en complemento a 2, truncado a ANCHO_BITS (overflow = wrap, comportamiento estandar de aritmetica de ancho fijo).
-    suma = bits_a_entero(a_bits) + bits_a_entero(b_bits)
+VENTANA = 4  #Coincide con el ciclo de 4 valores del oscilador (un periodo de cos(t))
+DESPLAZAMIENTO = 2  #Log2(VENTANA): dividir entre 4 = shift right 2
+
+
+def promediar_grupo(bits_grupo: List[str]) -> str:
+
+    #(suma de VENTANA muestras) >> DESPLAZAMIENTO en complemento a 2, truncado a ANCHO_BITS (overflow = wrap, comportamiento estandar de aritmetica de ancho fijo)
+    suma = sum(bits_a_entero(b) for b in bits_grupo)
     suma_wrapped = ((suma + (1 << (ANCHO_BITS - 1))) % (1 << ANCHO_BITS)) - (1 << (ANCHO_BITS - 1))
-    desplazado = suma_wrapped >> 1  #shift aritmetico: preserva signo (division entera hacia -inf)
+    desplazado = suma_wrapped >> DESPLAZAMIENTO  #Shift aritmetico: preserva signo
     return entero_a_bits(desplazado)
 
 
 def construir_resultados(muestras: List[str]) -> List[str]:
-    if len(muestras) % 2 != 0:
-        raise ValueError("El filtro requiere un numero par de muestras (ventana k=2, sin solape)")
+    if len(muestras) % VENTANA != 0:
+        raise ValueError(f"El filtro requiere que el numero de muestras sea múltiplo de {VENTANA} (ventana sin solape)")
     resultados = []
-    for i in range(0, len(muestras), 2):
-        resultados.append(promediar_par(muestras[i], muestras[i + 1]))
+    for i in range(0, len(muestras), VENTANA):
+        resultados.append(promediar_grupo(muestras[i:i + VENTANA]))
     return resultados
 
 
@@ -50,15 +55,16 @@ class TMFiltro:
     en vez de un ciclo fijo de 4 patrones.
 
     Simplificacion declarada: un pasabajos ideal no es implementable en TM
-    en un semestre. k=2 (potencia de 2) permite que "dividir" sea un shift
-    aritmetico en vez de division general.
+    en un semestre. VENTANA=4 (potencia de 2, igual al ciclo del oscilador)
+    permite que "dividir" sea un shift aritmetico en vez de division general,
+    y asegura que cada promedio cubra un periodo completo de cos(t).
     """
 
     def __init__(self, N: int):
-        if N <= 0 or N % 2 != 0:
-            raise ValueError("N debe ser un entero positivo par")
+        if N <= 0 or N % VENTANA != 0:
+            raise ValueError(f"N debe ser un entero positivo múltiplo de {VENTANA}")
         self.N = N
-        self.num_salidas = N // 2
+        self.num_salidas = N // VENTANA
         self.tape: Dict[int, str] = {}
         self.head: int = 0
         self.state = ('BUSCAR_TICK', self.num_salidas - 1)
@@ -68,7 +74,7 @@ class TMFiltro:
         self._construir_cinta_inicial()
         self._construir_tabla_transiciones()
 
-    #Primitivas de cinta (dict)
+    #Primitivas de cinta (dict) 
     def leer(self, pos=None) -> str:
         if pos is None:
             pos = self.head
@@ -86,12 +92,12 @@ class TMFiltro:
     def mover_izquierda(self):
         self.head -= 1
 
-    #Cinta inicial
+    #Cinta inicial 
     def _construir_cinta_inicial(self):
         #Zona contador: un tick por par de muestras a producir
         for i in range(self.num_salidas):
             self.tape[i] = '1'
-        self.tape[self.num_salidas] = '$'  # frontera
+        self.tape[self.num_salidas] = '$'  #Frontera
         self.head = 0
 
     #Tabla de transiciones delta 
@@ -139,7 +145,7 @@ class TMFiltro:
 
         self.delta = d
 
-    #Ejecución paso a paso
+    #Ejecución paso a paso 
     def step(self):
         if self.halted:
             return False
@@ -149,7 +155,7 @@ class TMFiltro:
 
         if tarjeta is None:
             raise RuntimeError(
-                f"No hay transicion definida para estado={self.state}, simbolo='{simbolo}'"
+                f"No hay transición definida para estado={self.state}, simbolo='{simbolo}'"
             )
 
         nuevo_estado, simbolo_a_escribir, movimiento = tarjeta
@@ -183,9 +189,10 @@ class TMFiltro:
         while not self.halted and self.step_count < max_pasos:
             self.step()
         if not self.halted:
-            raise RuntimeError("La maquina no llego a q_halt (limite de pasos superado)")
+            raise RuntimeError("La máquina no llego a q_halt (límite de pasos superado)")
         return self.leer_salida()
 
+    #Leer el resultado de la salida 
     def leer_salida(self) -> str:
         pos = self.num_salidas + 1
         out = []
@@ -202,16 +209,15 @@ if __name__ == "__main__":
 
     print(f"N (muestras de entrada) = {N}")
     print(f"Muestras de entrada (desde index.txt): {MUESTRAS}")
-    print(f"Muestras precalculadas (a+b)>>1 por par: {RESULTADOS}")
+    print(f"Grupos de {VENTANA} promediados (suma>>{DESPLAZAMIENTO}): {RESULTADOS}")
     print(f"Pasos ejecutados: {m.step_count}")
     print(f"Cinta de salida: {salida}")
     print()
     print("Verificacion manual:")
     for i, r in enumerate(RESULTADOS):
-        print(f"  par {i}: {MUESTRAS[2*i]}({bits_a_entero(MUESTRAS[2*i])}) + "
-              f"{MUESTRAS[2*i+1]}({bits_a_entero(MUESTRAS[2*i+1])}) -> "
-              f">>1 -> {r}({bits_a_entero(r)})")
+        grupo = MUESTRAS[i * VENTANA:(i + 1) * VENTANA]
+        valores = [bits_a_entero(g) for g in grupo]
+        print(f"  grupo {i}: {valores} -> suma={sum(valores)} -> >>{DESPLAZAMIENTO} -> {r}({bits_a_entero(r)})")
 
-    # NUEVO: se escribe la salida a archivo para que el harness pueda leerla
     with open("salida.txt", "w") as f:
         f.write(salida)
