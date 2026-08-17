@@ -1,54 +1,14 @@
-"""
-TM-Oscilador  (nodos 1 y 4 del diagrama)
-=========================================
-Maquina de Turing DETERMINISTA de UNA cinta, formalmente:
-
-    M = (Q, Sigma, Gamma, delta, q0, B, F)
-
-- Q      : conjunto finito de estados (ver TRANSICIONES abajo)
-- Sigma  : alfabeto de entrada  {'1'}                (el contador N en unario)
-- Gamma  : alfabeto de cinta    {'0','1','X','$','#','B'}
-- delta  : funcion de transicion parcial, IMPLEMENTADA como diccionario:
-               (estado, simbolo_leido) -> (nuevo_estado, simbolo_escrito, movimiento)
-           Cada entrada de ese diccionario es literalmente una "tarjeta":
-           el programa NO decide con ifs sobre el contenido semantico de la señal,
-           solo hace tape.get(head) -> busca la tarjeta -> aplica -> avanza.
-- q0     : ('VOLVER_FRONTERA', 0)
-- B      : 'B' (blanco, no ocupa memoria en el dict)
-- F      : {'q_halt'}
-
-Que hace la maquina
---------------------
-Recibe SOLO un numero N (multiplo de 4, igual al numero de lineas de input.txt).
-No lee ninguna senal. Escribe en su propia cinta N muestras de 8 bits
-(complemento a 2) que aproximan cos(t) con un ciclo de 4 valores:
-
-    +1 -> 00000001
-     0 -> 00000000
-    -1 -> 11111111
-     0 -> 00000000
-
-repetido N/4 veces, separadas por '#'.
-
-Layout de la cinta ANTES de correr
------------------------------------
-posiciones 0..N-1  : 'N unos'  -> contador en UNARIO (cuantas muestras faltan)
-posicion  N        : '$'       -> frontera fija entre zona-contador y zona-salida
-posicion  N+1 ...   : blanco    -> aqui se va escribiendo cos(t)
-
-Por que el cabezal puede "ir y volver" sin perder el lugar
--------------------------------------------------------------
-Es la tecnica clasica de TM de una cinta: en vez de "recordar" una posicion
-en una variable, la maquina vuelve a ESCANEAR desde un punto de referencia
-fijo ('$' o el primer blanco) hasta encontrar lo que busca. Esto es lo que
-hacen los estados VOLVER_FRONTERA / IR_A_CONTADOR / BUSCAR_TICK.
-"""
-
 from typing import Dict, Tuple
 
 BLANK = 'B'
-# ciclo de 4 valores de cos(t), 8 bits, complemento a 2
-PATTERNS = ["00000001", "00000000", "11111111", "00000000"]
+
+# En lugar de tener los patrones quemados en código:
+# PATTERNS = ["00000001", "00000000", "11111111", "00000000"]
+
+# Se leen directamente desde index.txt respetando el separador '#'
+with open("index.txt", "r") as f:
+    contenido = f.read().strip()
+    PATTERNS = [p for p in contenido.split("#") if p]
 
 
 class TMOscilador:
