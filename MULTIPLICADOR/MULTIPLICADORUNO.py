@@ -189,7 +189,6 @@ class TMMultiplicador:
             raise RuntimeError("La maquina no llego a q_halt (limite de pasos superado)")
         return self.leer_salida()
 
-    #leer el resultado de la salida 
     def leer_salida(self) -> str:
         pos = self.N + 1
         out = []
@@ -216,3 +215,7 @@ if __name__ == "__main__":
         print(f"  muestra {i}: {ENTRADA_X[i]}({bits_a_entero(ENTRADA_X[i])}) * "
               f"{ENTRADA_COS[i]}({bits_a_entero(ENTRADA_COS[i])}) = "
               f"{r}({bits_a_entero(r)})")
+
+    #Se escribe la salida a archivo para que el harness pueda leerla
+    with open("salida.txt", "w") as f:
+        f.write(salida)
